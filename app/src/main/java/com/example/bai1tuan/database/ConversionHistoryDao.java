@@ -7,7 +7,7 @@ import androidx.room.Query;
 import java.util.List;
 
 @Dao
-public interface ConversionDao {
+public interface ConversionHistoryDao {
     @Insert
     void insert(ConversionHistory history);
 
