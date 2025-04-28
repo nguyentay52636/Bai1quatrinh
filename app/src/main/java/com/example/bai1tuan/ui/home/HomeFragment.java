@@ -200,28 +200,33 @@ public class HomeFragment extends Fragment {
 
         try {
             double amount = Double.parseDouble(amountStr);
+            double result = 0;
 
             // Vì API trả về tỷ giá với USD là base currency
             if (fromCurrency.equals("USD")) {
                 // Nếu from là USD, chỉ cần nhân với tỷ giá của to currency
                 double toRate = conversionRates.get(toCurrency);
-                double result = amount * toRate;
-                textViewResult.setText(String.format(Locale.getDefault(), "%.2f %s", result, toCurrency));
+                result = amount * toRate;
             } else if (toCurrency.equals("USD")) {
                 // Nếu to là USD, chia cho tỷ giá của from currency
                 double fromRate = conversionRates.get(fromCurrency);
-                double result = amount / fromRate;
-                textViewResult.setText(String.format(Locale.getDefault(), "%.2f %s", result, toCurrency));
+                result = amount / fromRate;
             } else {
                 // Nếu cả hai đều không phải USD, đầu tiên chuyển sang USD rồi chuyển sang currency đích
                 double fromRate = conversionRates.get(fromCurrency);
                 double toRate = conversionRates.get(toCurrency);
-                double result = (amount / fromRate) * toRate;
-                textViewResult.setText(String.format(Locale.getDefault(), "%.2f %s", result, toCurrency));
+                result = (amount / fromRate) * toRate;
             }
 
+            // Hiển thị kết quả
+            textViewResult.setText(String.format(Locale.getDefault(), "%.2f %s", result, toCurrency));
+
             // Lưu vào lịch sử
-//            saveHistory(fromCurrency, toCurrency, amount, Double.parseDouble(textViewResult.getText().toString().split(" ")[0]));
+            saveHistory(fromCurrency, toCurrency, amount, result);
+
+            // Hiển thị thông báo thành công
+            Toast.makeText(requireContext(), "Đã lưu vào lịch sử", Toast.LENGTH_SHORT).show();
+
         } catch (NumberFormatException e) {
             Toast.makeText(requireContext(), "Số tiền không hợp lệ!", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
@@ -229,16 +234,16 @@ public class HomeFragment extends Fragment {
         }
     }
 
-//    private void saveHistory(String from, String to, double inputAmount, double resultAmount) {
-//        ConversionHistory history = new ConversionHistory();
-//        history.fromCurrency = from;
-//        history.toCurrency = to;
-//        history.inputAmount = inputAmount;
-//        history.resultAmount = resultAmount;
-//        history.date = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(new Date());
-//
-//        db.conversionHistoryDao().insert(history);
-//    }
+    private void saveHistory(String from, String to, double inputAmount, double resultAmount) {
+        ConversionHistory history = new ConversionHistory();
+        history.fromCurrency = from;
+        history.toCurrency = to;
+        history.inputAmount = inputAmount;
+        history.resultAmount = resultAmount;
+        history.date = new SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(new Date());
+
+        db.conversionHistoryDao().insert(history);
+    }
 
     private void setupDailyUpdate() {
         PeriodicWorkRequest workRequest = new PeriodicWorkRequest.Builder(UpdateRatesWorker.class,

@@ -1,6 +1,7 @@
 package com.example.bai1tuan;
 
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.Menu;
 
@@ -20,6 +21,7 @@ public class MainActivity extends AppCompatActivity {
 
     private AppBarConfiguration mAppBarConfiguration;
     private ActivityMainBinding binding;
+    private static final String TAG = "MainActivity";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -37,15 +39,23 @@ public class MainActivity extends AppCompatActivity {
                         .setAnchorView(R.id.fab).show();
             }
         });
+
         DrawerLayout drawer = binding.drawerLayout;
         NavigationView navigationView = binding.navView;
-        // Passing each menu ID as a set of Ids because each
-        // menu should be considered as top level destinations.
+        
+        // Cập nhật ID menu theo activity_main_drawer.xml
         mAppBarConfiguration = new AppBarConfiguration.Builder(
-                R.id.nav_home, R.id.nav_gallery, R.id.nav_slideshow)
+                R.id.nav_converter, R.id.nav_history, R.id.nav_chart)
                 .setOpenableLayout(drawer)
                 .build();
+
         NavController navController = Navigation.findNavController(this, R.id.nav_host_fragment_content_main);
+        
+        // Thêm log để debug
+        navController.addOnDestinationChangedListener((controller, destination, arguments) -> {
+            Log.d(TAG, "Navigation to: " + destination.getLabel() + ", id: " + destination.getId());
+        });
+
         NavigationUI.setupActionBarWithNavController(this, navController, mAppBarConfiguration);
         NavigationUI.setupWithNavController(navigationView, navController);
     }
