@@ -1,6 +1,7 @@
 package com.example.bai1tuan.ui.slideshow;
 
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
@@ -10,6 +11,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
+import android.widget.RadioGroup;
 import android.widget.Spinner;
 import android.widget.TextView;
 
@@ -21,15 +23,20 @@ import com.example.bai1tuan.model.ExchangeRateData;
 import com.example.bai1tuan.services.ExchangeRateApiService;
 import com.example.bai1tuan.services.ExchangeRateResponse;
 import com.example.bai1tuan.services.Key;
-import com.github.mikephil.charting.charts.LineChart;
+import com.github.mikephil.charting.charts.CandleStickChart;
+import com.github.mikephil.charting.components.Legend;
 import com.github.mikephil.charting.components.XAxis;
-import com.github.mikephil.charting.data.Entry;
-import com.github.mikephil.charting.data.LineData;
-import com.github.mikephil.charting.data.LineDataSet;
+import com.github.mikephil.charting.components.YAxis;
+import com.github.mikephil.charting.data.CandleData;
+import com.github.mikephil.charting.data.CandleDataSet;
+import com.github.mikephil.charting.data.CandleEntry;
 import com.github.mikephil.charting.formatter.ValueFormatter;
+import com.github.mikephil.charting.highlight.Highlight;
+import com.github.mikephil.charting.listener.OnChartValueSelectedListener;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -44,13 +51,16 @@ import retrofit2.converter.gson.GsonConverterFactory;
 public class SlideshowFragment extends Fragment {
 
     private FragmentSlideshowBinding binding;
-    private LineChart lineChart;
+    private CandleStickChart candleChart;
     private Spinner spinnerCurrency;
     private TextView textViewLastUpdate;
     private ExchangeRateApiService apiService;
     private List<ExchangeRateData> rateDataList = new ArrayList<>();
     private Handler updateHandler;
     private static final long UPDATE_INTERVAL = 60000; // Update every 1 minute
+    private String currentTimePeriod = "HOUR"; // Default time period
+    private List<String> currencyList = new ArrayList<>();
+    private ArrayAdapter<String> currencyAdapter;
 
     private final Runnable updateRunnable = new Runnable() {
         @Override
@@ -61,47 +71,265 @@ public class SlideshowFragment extends Fragment {
     };
 
     public View onCreateView(@NonNull LayoutInflater inflater,
-                           ViewGroup container, Bundle savedInstanceState) {
+                             ViewGroup container, Bundle savedInstanceState) {
         binding = FragmentSlideshowBinding.inflate(inflater, container, false);
         View root = binding.getRoot();
 
-        // Khởi tạo handler
         updateHandler = new Handler(Looper.getMainLooper());
-
-        // Khởi tạo views
-        lineChart = binding.lineChart;
+        candleChart = binding.candleChart;
         spinnerCurrency = binding.spinnerCurrency;
         textViewLastUpdate = binding.textViewLastUpdate;
 
-        // Setup spinner
-        setupSpinner();
+        currencyAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, currencyList);
+        spinnerCurrency.setAdapter(currencyAdapter);
+        spinnerCurrency.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                fetchLatestRate();
+            }
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
 
-        // Setup chart
-        setupChart();
-
-        // Setup API service
+        setupCandleChart();
+        setupTimePeriodSelection();
         setupApiService();
 
-        // Setup refresh button
         binding.buttonRefresh.setOnClickListener(v -> {
             stopAutoUpdate();
             fetchLatestRate();
             startAutoUpdate();
         });
 
-        // Load dữ liệu ban đầu và bắt đầu cập nhật tự động
-        fetchLatestRate();
+        fetchCurrencyListAndFirstRate();
         startAutoUpdate();
 
         return root;
     }
 
-    private void startAutoUpdate() {
-        updateHandler.postDelayed(updateRunnable, UPDATE_INTERVAL);
+    private void setupTimePeriodSelection() {
+        binding.radioGroupTimePeriod.setOnCheckedChangeListener((group, checkedId) -> {
+            if (checkedId == binding.radioHour.getId()) {
+                currentTimePeriod = "HOUR";
+            } else if (checkedId == binding.radioDay.getId()) {
+                currentTimePeriod = "DAY";
+            } else if (checkedId == binding.radioMonth.getId()) {
+                currentTimePeriod = "MONTH";
+            } else if (checkedId == binding.radioYear.getId()) {
+                currentTimePeriod = "YEAR";
+            }
+            updateCandleChartData();
+        });
     }
 
-    private void stopAutoUpdate() {
-        updateHandler.removeCallbacks(updateRunnable);
+    private void setupCandleChart() {
+        candleChart.getDescription().setEnabled(false);
+        candleChart.setDrawGridBackground(false);
+        candleChart.setBackgroundColor(Color.WHITE);
+        candleChart.setExtraOffsets(10f, 10f, 10f, 20f);
+
+        XAxis xAxis = candleChart.getXAxis();
+        xAxis.setPosition(XAxis.XAxisPosition.BOTTOM);
+        xAxis.setTextColor(Color.parseColor("#424242"));
+        xAxis.setTextSize(13f);
+        xAxis.setDrawGridLines(true);
+        xAxis.setGridColor(Color.parseColor("#F0F0F0"));
+        xAxis.setGridLineWidth(1.1f);
+        xAxis.setGranularity(1f);
+        xAxis.setLabelRotationAngle(-45f);
+        xAxis.setDrawAxisLine(true);
+        xAxis.setDrawLabels(true);
+        xAxis.setAvoidFirstLastClipping(true);
+        xAxis.setValueFormatter(new ValueFormatter() {
+            private final SimpleDateFormat sdf = new SimpleDateFormat("HH:mm", Locale.getDefault());
+            private final SimpleDateFormat sdfDay = new SimpleDateFormat("dd/MM", Locale.getDefault());
+            private final SimpleDateFormat sdfMonth = new SimpleDateFormat("MM/yyyy", Locale.getDefault());
+            private final SimpleDateFormat sdfYear = new SimpleDateFormat("yyyy", Locale.getDefault());
+
+            @Override
+            public String getFormattedValue(float value) {
+                Date date = new Date((long) value);
+                switch (currentTimePeriod) {
+                    case "HOUR":
+                        return sdf.format(date);
+                    case "DAY":
+                        return sdfDay.format(date);
+                    case "MONTH":
+                        return sdfMonth.format(date);
+                    case "YEAR":
+                        return sdfYear.format(date);
+                    default:
+                        return sdf.format(date);
+                }
+            }
+        });
+
+        YAxis leftAxis = candleChart.getAxisLeft();
+        leftAxis.setTextColor(Color.parseColor("#424242"));
+        leftAxis.setTextSize(13f);
+        leftAxis.setDrawGridLines(true);
+        leftAxis.setGridColor(Color.parseColor("#F0F0F0"));
+        leftAxis.setGridLineWidth(1.1f);
+        leftAxis.setAxisLineColor(Color.parseColor("#424242"));
+        leftAxis.setDrawAxisLine(true);
+        leftAxis.setDrawLabels(true);
+        leftAxis.setValueFormatter(new ValueFormatter() {
+            @Override
+            public String getFormattedValue(float value) {
+                String currency = spinnerCurrency.getSelectedItem().toString();
+                switch (currency) {
+                    case "VND": return String.format(Locale.getDefault(), "%,.0f", value);
+                    case "JPY": return String.format(Locale.getDefault(), "%,.0f", value);
+                    case "KRW": return String.format(Locale.getDefault(), "%,.0f", value);
+                    default: return String.format(Locale.getDefault(), "%.2f", value);
+                }
+            }
+        });
+        leftAxis.setLabelCount(6, true);
+        leftAxis.setSpaceTop(8f);
+        leftAxis.setSpaceBottom(8f);
+
+        candleChart.getAxisRight().setEnabled(false);
+
+        candleChart.getLegend().setEnabled(true);
+        candleChart.getLegend().setTextColor(Color.parseColor("#424242"));
+        candleChart.getLegend().setTextSize(14f);
+        candleChart.getLegend().setFormSize(14f);
+        candleChart.getLegend().setXEntrySpace(10f);
+        candleChart.getLegend().setVerticalAlignment(Legend.LegendVerticalAlignment.TOP);
+        candleChart.getLegend().setHorizontalAlignment(Legend.LegendHorizontalAlignment.RIGHT);
+        candleChart.getLegend().setOrientation(Legend.LegendOrientation.HORIZONTAL);
+        candleChart.getLegend().setDrawInside(false);
+
+        candleChart.setOnChartValueSelectedListener(new OnChartValueSelectedListener() {
+            @Override
+            public void onValueSelected(com.github.mikephil.charting.data.Entry e, Highlight h) {
+                if (e instanceof CandleEntry) {
+                    CandleEntry ce = (CandleEntry) e;
+                    String currency = spinnerCurrency.getSelectedItem().toString();
+                    String formattedRate = String.format(Locale.getDefault(), "O: %.2f, H: %.2f, L: %.2f, C: %.2f", ce.getOpen(), ce.getHigh(), ce.getLow(), ce.getClose());
+                    binding.textViewCurrentRate.setText("1 USD = " + formattedRate + " " + currency);
+                }
+            }
+            @Override
+            public void onNothingSelected() {}
+        });
+    }
+
+    private void updateCandleChartData() {
+        // TEST: Giả lập dữ liệu nến OHLC nếu chưa có đủ dữ liệu thực tế
+        List<CandleEntry> candleEntries = new ArrayList<>();
+        if (rateDataList.size() < 40) {
+            long now = System.currentTimeMillis();
+            double lastClose = 25 + Math.random() * 5;
+            for (int i = 0; i < 40; i++) {
+                double open = lastClose;
+                double close = open + (Math.random() - 0.5) * 2;
+                double high = Math.max(open, close) + Math.random();
+                double low = Math.min(open, close) - Math.random();
+                lastClose = close;
+                candleEntries.add(new com.github.mikephil.charting.data.CandleEntry(
+                    now - (40 - i) * 60000,
+                    (float) high,
+                    (float) low,
+                    (float) open,
+                    (float) close
+                ));
+            }
+        } else {
+            Calendar calendar = Calendar.getInstance();
+            long currentTime = calendar.getTimeInMillis();
+            long startTime;
+            switch (currentTimePeriod) {
+                case "HOUR":
+                    calendar.add(Calendar.HOUR, -1);
+                    break;
+                case "DAY":
+                    calendar.add(Calendar.DAY_OF_MONTH, -1);
+                    break;
+                case "MONTH":
+                    calendar.add(Calendar.MONTH, -1);
+                    break;
+                case "YEAR":
+                    calendar.add(Calendar.YEAR, -1);
+                    break;
+            }
+            startTime = calendar.getTimeInMillis();
+            for (int i = 0; i < rateDataList.size(); i++) {
+                com.example.bai1tuan.model.ExchangeRateData data = rateDataList.get(i);
+                if (data.getTimestamp() >= startTime && data.getTimestamp() <= currentTime) {
+                    float value = (float) data.getRate();
+                    candleEntries.add(new com.github.mikephil.charting.data.CandleEntry(
+                        data.getTimestamp(), value, value, value, value));
+                }
+            }
+        }
+        updateCandleChartWithEntries(candleEntries);
+    }
+
+    private void updateCandleChartWithEntries(List<CandleEntry> entries) {
+        if (entries.isEmpty()) return;
+
+        String selectedCurrency = spinnerCurrency.getSelectedItem().toString();
+        CandleDataSet dataSet = new CandleDataSet(entries, "USD/" + selectedCurrency);
+
+        // Màu sắc chuyên nghiệp như TradingView
+        int green = Color.parseColor("#26A69A"); // xanh tăng
+        int red = Color.parseColor("#EF5350");   // đỏ giảm
+
+        dataSet.setShadowColorSameAsCandle(true);
+        dataSet.setShadowWidth(6f);
+        dataSet.setDecreasingColor(red);
+        dataSet.setDecreasingPaintStyle(Paint.Style.FILL);
+        dataSet.setIncreasingColor(green);
+        dataSet.setIncreasingPaintStyle(Paint.Style.FILL);
+        dataSet.setNeutralColor(Color.parseColor("#BDBDBD"));
+        dataSet.setBarSpace(0.02f);
+        dataSet.setDrawValues(false);
+        dataSet.setHighlightLineWidth(2.5f);
+        dataSet.setHighlightEnabled(true);
+        dataSet.setValueTextColor(Color.BLACK);
+        dataSet.setValueTextSize(14f);
+        dataSet.setDrawIcons(false);
+        dataSet.setDrawHorizontalHighlightIndicator(false);
+        dataSet.setDrawVerticalHighlightIndicator(true);
+
+        CandleData candleData = new CandleData(dataSet);
+        candleChart.setData(candleData);
+        candleChart.setAutoScaleMinMaxEnabled(true);
+        candleChart.animateX(1000);
+        candleChart.invalidate();
+    }
+
+    private void fetchLatestRate() {
+        String selectedCurrency = spinnerCurrency.getSelectedItem().toString();
+        Call<ExchangeRateResponse> call = apiService.getExchangeRates(Key.API_KEY, "USD");
+
+        call.enqueue(new Callback<ExchangeRateResponse>() {
+            @Override
+            public void onResponse(Call<ExchangeRateResponse> call, Response<ExchangeRateResponse> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    ExchangeRateResponse data = response.body();
+                    if (data.isSuccess()) {
+                        Map<String, Double> rates = data.getConversionRates();
+                        double rate = rates.get(selectedCurrency);
+                        long currentTime = System.currentTimeMillis();
+                        rateDataList.add(new ExchangeRateData(currentTime, rate));
+                        updateCandleChartData();
+                        updateLastUpdateTime();
+                    }
+                }
+            }
+
+            @Override
+            public void onFailure(Call<ExchangeRateResponse> call, Throwable t) {}
+        });
+    }
+
+    private void updateLastUpdateTime() {
+        String currentTime = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
+                .format(new Date());
+        textViewLastUpdate.setText("Cập nhật lúc: " + currentTime);
     }
 
     @Override
@@ -116,63 +344,12 @@ public class SlideshowFragment extends Fragment {
         stopAutoUpdate();
     }
 
-    private void setupSpinner() {
-        String[] currencies = {"EUR", "VND", "JPY", "CNY", "KRW"};
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(),
-                android.R.layout.simple_spinner_dropdown_item, currencies);
-        spinnerCurrency.setAdapter(adapter);
-        spinnerCurrency.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                fetchLatestRate();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
-        });
+    private void startAutoUpdate() {
+        updateHandler.postDelayed(updateRunnable, UPDATE_INTERVAL);
     }
 
-    private void setupChart() {
-        // Cấu hình chung cho biểu đồ
-        lineChart.getDescription().setEnabled(false);
-        lineChart.setTouchEnabled(true);
-        lineChart.setDragEnabled(true);
-        lineChart.setScaleEnabled(true);
-        lineChart.setDrawGridBackground(false);
-        lineChart.setDrawBorders(true);
-        lineChart.setBorderColor(Color.LTGRAY);
-        lineChart.setBorderWidth(1f);
-        lineChart.setBackgroundColor(Color.WHITE);
-        
-        // Cấu hình legend (chú thích)
-        lineChart.getLegend().setEnabled(true);
-        lineChart.getLegend().setTextColor(Color.BLACK);
-        lineChart.getLegend().setTextSize(12f);
-        
-        // Cấu hình trục X
-        XAxis xAxis = lineChart.getXAxis();
-        xAxis.setPosition(XAxis.XAxisPosition.BOTTOM);
-        xAxis.setTextColor(Color.BLACK);
-        xAxis.setDrawGridLines(true);
-        xAxis.setGridColor(Color.LTGRAY);
-        xAxis.setGridLineWidth(0.5f);
-        xAxis.setGranularity(1f);
-        xAxis.setValueFormatter(new ValueFormatter() {
-            private final SimpleDateFormat sdf = new SimpleDateFormat("HH:mm", Locale.getDefault());
-
-            @Override
-            public String getFormattedValue(float value) {
-                return sdf.format(new Date((long) value));
-            }
-        });
-
-        // Cấu hình trục Y
-        lineChart.getAxisLeft().setTextColor(Color.BLACK);
-        lineChart.getAxisLeft().setDrawGridLines(true);
-        lineChart.getAxisLeft().setGridColor(Color.LTGRAY);
-        lineChart.getAxisLeft().setGridLineWidth(0.5f);
-        lineChart.getAxisRight().setEnabled(false);
+    private void stopAutoUpdate() {
+        updateHandler.removeCallbacks(updateRunnable);
     }
 
     private void setupApiService() {
@@ -183,10 +360,8 @@ public class SlideshowFragment extends Fragment {
         apiService = retrofit.create(ExchangeRateApiService.class);
     }
 
-    private void fetchLatestRate() {
-        String selectedCurrency = spinnerCurrency.getSelectedItem().toString();
+    private void fetchCurrencyListAndFirstRate() {
         Call<ExchangeRateResponse> call = apiService.getExchangeRates(Key.API_KEY, "USD");
-        
         call.enqueue(new Callback<ExchangeRateResponse>() {
             @Override
             public void onResponse(Call<ExchangeRateResponse> call, Response<ExchangeRateResponse> response) {
@@ -194,125 +369,19 @@ public class SlideshowFragment extends Fragment {
                     ExchangeRateResponse data = response.body();
                     if (data.isSuccess()) {
                         Map<String, Double> rates = data.getConversionRates();
-                        double rate = rates.get(selectedCurrency);
-                        updateChart(rate);
-                        updateLastUpdateTime();
+                        currencyList.clear();
+                        currencyList.addAll(rates.keySet());
+                        currencyAdapter.notifyDataSetChanged();
+                        // Chọn USD mặc định nếu có
+                        int usdIndex = currencyList.indexOf("USD");
+                        if (usdIndex >= 0) spinnerCurrency.setSelection(usdIndex);
+                        fetchLatestRate();
                     }
                 }
             }
-
             @Override
-            public void onFailure(Call<ExchangeRateResponse> call, Throwable t) {
-                // Xử lý lỗi
-            }
+            public void onFailure(Call<ExchangeRateResponse> call, Throwable t) {}
         });
-    }
-
-    private void updateChart(double newRate) {
-        // Thêm dữ liệu mới
-        long currentTime = System.currentTimeMillis();
-        rateDataList.add(new ExchangeRateData(currentTime, newRate));
-
-        // Giới hạn số điểm dữ liệu (giữ 24 điểm gần nhất)
-        if (rateDataList.size() > 24) {
-            rateDataList.remove(0);
-        }
-
-        // Chuyển đổi dữ liệu cho biểu đồ
-        List<Entry> entries = new ArrayList<>();
-        for (ExchangeRateData data : rateDataList) {
-            entries.add(new Entry(data.getTimestamp(), (float) data.getRate()));
-        }
-
-        String selectedCurrency = spinnerCurrency.getSelectedItem().toString();
-        
-        // Cấu hình đường biểu đồ
-        LineDataSet dataSet = new LineDataSet(entries, "USD/" + selectedCurrency);
-        dataSet.setColor(Color.rgb(65, 105, 225)); // Màu xanh dương đậm
-        dataSet.setLineWidth(2f);
-        dataSet.setDrawCircles(true);
-        dataSet.setCircleColor(Color.rgb(65, 105, 225));
-        dataSet.setCircleRadius(4f);
-        dataSet.setDrawCircleHole(true);
-        dataSet.setCircleHoleRadius(2f);
-        dataSet.setValueTextSize(12f);
-        dataSet.setDrawValues(true);
-        dataSet.setMode(LineDataSet.Mode.CUBIC_BEZIER); // Làm mượt đường
-        dataSet.setCubicIntensity(0.2f);
-        
-        // Định dạng giá trị hiển thị theo loại tiền tệ
-        dataSet.setValueFormatter(new ValueFormatter() {
-            @Override
-            public String getFormattedValue(float value) {
-                switch (selectedCurrency) {
-                    case "VND":
-                        return String.format(Locale.getDefault(), "%,.0f đ", value);
-                    case "EUR":
-                        return String.format(Locale.getDefault(), "€%.2f", value);
-                    case "JPY":
-                        return String.format(Locale.getDefault(), "¥%.0f", value);
-                    case "CNY":
-                        return String.format(Locale.getDefault(), "¥%.2f", value);
-                    case "KRW":
-                        return String.format(Locale.getDefault(), "₩%.0f", value);
-                    default:
-                        return String.format(Locale.getDefault(), "%.2f", value);
-                }
-            }
-        });
-
-        // Thêm gradient cho area dưới đường
-        dataSet.setDrawFilled(true);
-        int startColor = Color.argb(150, 65, 105, 225); // Màu xanh dương trong suốt
-        int endColor = Color.argb(0, 65, 105, 225); // Trong suốt hoàn toàn
-        dataSet.setFillDrawable(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{startColor, endColor}));
-
-        LineData lineData = new LineData(dataSet);
-        lineChart.setData(lineData);
-        
-        // Animation
-        lineChart.animateX(500);
-        
-        // Refresh biểu đồ
-        lineChart.invalidate();
-        
-        // Cập nhật giá trị hiện tại
-        updateCurrentRate(newRate, selectedCurrency);
-    }
-
-    private void updateCurrentRate(double rate, String currency) {
-        String formattedRate;
-        switch (currency) {
-            case "VND":
-                formattedRate = String.format(Locale.getDefault(), "%,.0f VND", rate);
-                break;
-            case "EUR":
-                formattedRate = String.format(Locale.getDefault(), "€%.2f", rate);
-                break;
-            case "JPY":
-                formattedRate = String.format(Locale.getDefault(), "¥%.0f", rate);
-                break;
-            case "CNY":
-                formattedRate = String.format(Locale.getDefault(), "¥%.2f", rate);
-                break;
-            case "KRW":
-                formattedRate = String.format(Locale.getDefault(), "₩%.0f", rate);
-                break;
-            default:
-                formattedRate = String.format(Locale.getDefault(), "%.2f", rate);
-        }
-        
-        // Hiển thị tỉ giá hiện tại
-        if (binding.textViewCurrentRate != null) {
-            binding.textViewCurrentRate.setText("1 USD = " + formattedRate);
-        }
-    }
-
-    private void updateLastUpdateTime() {
-        String currentTime = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
-                .format(new Date());
-        textViewLastUpdate.setText("Cập nhật lúc: " + currentTime);
     }
 
     @Override

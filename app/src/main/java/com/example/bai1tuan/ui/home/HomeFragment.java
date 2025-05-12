@@ -47,6 +47,9 @@ import retrofit2.converter.gson.GsonConverterFactory;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class HomeFragment extends Fragment {
 
     private FragmentHomeBinding binding;
@@ -58,6 +61,9 @@ public class HomeFragment extends Fragment {
     private ExchangeRateApiService apiService;
     private Map<String, Double> conversionRates;
     private AppDatabase db;
+
+    private List<String> currencyList = new ArrayList<>();
+    private ArrayAdapter<String> currencyAdapter;
 
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater,
@@ -73,12 +79,10 @@ public class HomeFragment extends Fragment {
         textViewResult = binding.textViewResult;
         textViewStatus = binding.textViewStatus;
 
-        // Setup spinner data
-        String[] currencies = {"USD", "EUR", "VND", "JPY", "CNY", "KRW"};
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(requireContext(),
-                android.R.layout.simple_spinner_dropdown_item, currencies);
-        spinnerFrom.setAdapter(adapter);
-        spinnerTo.setAdapter(adapter);
+        // Setup spinner data động
+        currencyAdapter = new ArrayAdapter<>(requireContext(), android.R.layout.simple_spinner_dropdown_item, currencyList);
+        spinnerFrom.setAdapter(currencyAdapter);
+        spinnerTo.setAdapter(currencyAdapter);
 
         // Setup Retrofit
         Retrofit retrofit = new Retrofit.Builder()
@@ -94,12 +98,10 @@ public class HomeFragment extends Fragment {
                 .allowMainThreadQueries() // Tạm cho phép để đơn giản, sản phẩm thật thì dùng AsyncTask/Coroutine
                 .build();
 
-        fetchExchangeRates("USD"); // Load mặc định USD khi vào app
+        fetchExchangeRatesAndCurrencies("USD"); // Load mặc định USD khi vào app và lấy danh sách tiền tệ
         setupDailyUpdate();
 
         buttonConvert.setOnClickListener(v -> convertCurrency());
-
-
 
         return root;
     }
@@ -110,38 +112,8 @@ public class HomeFragment extends Fragment {
         }
     }
 
-    private void fetchExchangeRates(String baseCurrency) {
-        Log.d("ExchangeRates", "Starting fetchExchangeRates for " + baseCurrency);
+    private void fetchExchangeRatesAndCurrencies(String baseCurrency) {
         updateStatus("Đang tải tỷ giá...");
-        
-        // First try to load from SharedPreferences
-        SharedPreferences prefs = requireContext().getSharedPreferences("exchange_rates", Context.MODE_PRIVATE);
-        String ratesJson = prefs.getString("rates", null);
-        if (ratesJson != null) {
-            try {
-                Gson gson = new Gson();
-                Type type = new TypeToken<Map<String, Double>>(){}.getType();
-                conversionRates = gson.fromJson(ratesJson, type);
-                Log.d("ExchangeRates", "Loaded rates from SharedPreferences: " + ratesJson);
-                if (conversionRates != null && !conversionRates.isEmpty()) {
-                    Log.d("ExchangeRates", "Successfully loaded rates, size: " + conversionRates.size());
-                    updateStatus("Đã tải tỷ giá từ bộ nhớ");
-                } else {
-                    Log.e("ExchangeRates", "Loaded rates are null or empty");
-                    updateStatus("Đang tải tỷ giá mới...");
-                }
-            } catch (Exception e) {
-                Log.e("ExchangeRates", "Error loading rates from SharedPreferences", e);
-                e.printStackTrace();
-                updateStatus("Đang tải tỷ giá mới...");
-            }
-        } else {
-            Log.d("ExchangeRates", "No rates found in SharedPreferences");
-            updateStatus("Đang tải tỷ giá mới...");
-        }
-
-        // Then fetch fresh rates from API
-        Log.d("ExchangeRates", "Making API call to: " + Key.BASE_URL + Key.API_KEY + "/latest/" + baseCurrency);
         Call<ExchangeRateResponse> call = apiService.getExchangeRates(Key.API_KEY, baseCurrency);
         call.enqueue(new Callback<ExchangeRateResponse>() {
             @Override
@@ -150,34 +122,29 @@ public class HomeFragment extends Fragment {
                     ExchangeRateResponse exchangeResponse = response.body();
                     if (exchangeResponse.isSuccess()) {
                         conversionRates = exchangeResponse.getConversionRates();
-                        Log.d("ExchangeRates", "Received new rates from API: " + conversionRates);
                         if (conversionRates != null && !conversionRates.isEmpty()) {
-                            // Save to SharedPreferences
-                            SharedPreferences.Editor editor = prefs.edit();
-                            Gson gson = new Gson();
-                            String newRatesJson = gson.toJson(conversionRates);
-                            editor.putString("rates", newRatesJson);
-                            editor.apply();
-                            Log.d("ExchangeRates", "Saved new rates to SharedPreferences. Base currency: " + exchangeResponse.getBaseCode());
+                            currencyList.clear();
+                            currencyList.addAll(conversionRates.keySet());
+                            currencyAdapter.notifyDataSetChanged();
+                            // Chọn USD mặc định nếu có
+                            int usdIndex = currencyList.indexOf("USD");
+                            if (usdIndex >= 0) {
+                                spinnerFrom.setSelection(usdIndex);
+                                spinnerTo.setSelection(usdIndex);
+                            }
                             updateStatus("Tỷ giá đã được cập nhật");
                         } else {
-                            Log.e("ExchangeRates", "API returned null or empty rates");
                             updateStatus("Lỗi: API trả về tỷ giá rỗng");
                         }
                     } else {
-                        Log.e("ExchangeRates", "API response indicates failure: " + exchangeResponse.getResult());
                         updateStatus("Lỗi: " + exchangeResponse.getResult());
                     }
                 } else {
-                    Log.e("ExchangeRates", "API response not successful: " + response.code() + 
-                        ", Error body: " + (response.errorBody() != null ? response.errorBody().toString() : "null"));
                     updateStatus("Lỗi tải tỷ giá: " + response.code());
                 }
             }
-
             @Override
             public void onFailure(Call<ExchangeRateResponse> call, Throwable t) {
-                Log.e("ExchangeRates", "API call failed: " + t.getMessage(), t);
                 updateStatus("Lỗi kết nối: " + t.getMessage());
             }
         });
